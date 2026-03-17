@@ -1,9 +1,33 @@
 #!/usr/bin/env node
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, appendFileSync, existsSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { FeishuClient } from "./feishu.js";
-import { buildWorkingCard, buildDoneCard, toolDisplay } from "./card.js";
+import {
+  buildThinkingCard,
+  buildWorkingCard,
+  buildDoneCard,
+  toolDisplay,
+} from "./card.js";
 import { installHooks, uninstallHooks } from "./install.js";
+
+// --- Bridge detection ---
+
+let _isBridge: boolean | undefined;
+
+/** Check if parent process (Claude Code) was launched by mini-bridge */
+function isBridgeSession(): boolean {
+  if (_isBridge !== undefined) return _isBridge;
+  try {
+    const args = execSync(`ps -p ${process.ppid} -o args=`, {
+      timeout: 1000,
+    }).toString();
+    _isBridge = args.includes("mini-bridge");
+  } catch {
+    _isBridge = false;
+  }
+  return _isBridge;
+}
 
 // --- State ---
 
@@ -12,8 +36,8 @@ const STATE_PATH = "/tmp/cc-hook-state.json";
 interface State {
   enabled: boolean;
   chat_id: string;
-  session_id?: string; // bound session — only this session sends cards
-  pending_bind?: boolean; // waiting for PostToolUse to capture session_id
+  session_id?: string;
+  pending_bind?: boolean;
   message_id?: string;
   step_count?: number;
   start_time?: number;
@@ -71,17 +95,57 @@ function formatTime(s: number): string {
 
 // --- Hook handlers ---
 
+/**
+ * UserPromptSubmit — fires when user sends a message.
+ * Creates the card immediately and binds session_id.
+ */
+async function handlePrompt(): Promise<void> {
+  const state = readState();
+  if (!state?.enabled || !state.chat_id) return;
+  if (!isBridgeSession()) return;
+
+  const raw = readStdin();
+  writeFileSync("/tmp/cc-hook-debug.log", `prompt raw: ${raw}\n`);
+  const input = JSON.parse(raw);
+  const sessionId: string = input.session_id || "";
+  const prompt: string = input.prompt || "";
+
+  // Always rebind session on UserPromptSubmit — handles restarts gracefully
+  if (sessionId) {
+    state.session_id = sessionId;
+    state.pending_bind = undefined;
+  }
+
+  const client = await FeishuClient.create();
+  if (!client) return;
+
+  const now = Math.floor(Date.now() / 1000);
+
+  // Reset state for new turn — create fresh card
+  const card = buildThinkingCard(prompt);
+  const messageId = await client.sendCard(state.chat_id, card);
+
+  writeState({
+    ...state,
+    session_id: state.session_id || sessionId || undefined,
+    message_id: messageId || undefined,
+    step_count: 0,
+    start_time: now,
+    steps: [],
+  });
+}
+
 async function handlePre(): Promise<void> {
   const state = readState();
   if (!state?.enabled || !state.chat_id) return;
-
-  // Still waiting for PostToolUse to bind session — skip all PreToolUse
   if (state.pending_bind) return;
+  if (!isBridgeSession()) return;
 
-  const input = JSON.parse(readStdin());
+  const raw = readStdin();
+  appendFileSync("/tmp/cc-hook-debug.log", `pre raw: ${raw.slice(0, 200)}\nsid_match: state=${state.session_id} \n`);
+  const input = JSON.parse(raw);
   const sessionId: string = input.session_id || "";
 
-  // Session check: only the bound session sends cards
   if (state.session_id && state.session_id !== sessionId) return;
 
   const toolName: string = input.tool_name || "";
@@ -108,8 +172,10 @@ async function handlePre(): Promise<void> {
   let messageId = state.message_id;
   if (!messageId) {
     messageId = await client.sendCard(state.chat_id, card);
+    appendFileSync("/tmp/cc-hook-debug.log", `pre sendCard result: ${messageId}\n`);
   } else {
     await client.updateCard(messageId, card);
+    appendFileSync("/tmp/cc-hook-debug.log", `pre updateCard: ${messageId}\n`);
   }
 
   steps.push(display);
@@ -123,18 +189,12 @@ async function handlePre(): Promise<void> {
 }
 
 /**
- * PostToolUse handler — binds session_id when pending_bind is set.
- *
- * Flow:
- *   1. `cc-hook on` writes state with pending_bind: true
- *   2. The next PostToolUse from the active session captures session_id
- *   3. All subsequent PreToolUse/Stop calls are scoped to that session
- *
- * No Bash call required — any tool's PostToolUse will trigger the bind.
+ * PostToolUse — binds session_id if still pending (fallback for no-prompt hook).
  */
 async function handlePost(): Promise<void> {
   const state = readState();
   if (!state?.pending_bind) return;
+  if (!isBridgeSession()) return;
 
   const input = JSON.parse(readStdin());
   const sessionId: string = input.session_id || "";
@@ -145,11 +205,99 @@ async function handlePost(): Promise<void> {
   writeState(state);
 }
 
-async function handleStop(): Promise<void> {
+/**
+ * SubagentStart — show agent spawn in steps.
+ */
+async function handleSubagentStart(): Promise<void> {
   const state = readState();
   if (!state?.enabled || !state.chat_id || !state.message_id) return;
+  if (!isBridgeSession()) return;
 
   const input = JSON.parse(readStdin());
+  const sessionId: string = input.session_id || "";
+  if (state.session_id && state.session_id !== sessionId) return;
+
+  const agentType: string = input.agent_type || "subagent";
+
+  const client = await FeishuClient.create();
+  if (!client) return;
+
+  const now = Math.floor(Date.now() / 1000);
+  const startTime = state.start_time || now;
+  const stepCount = (state.step_count || 0) + 1;
+  const steps = state.steps || [];
+  const elapsed = formatTime(now - startTime);
+
+  const display = `🚀 \`AGENT\` ${agentType} spawned`;
+
+  const recentSteps = steps.slice(-12);
+  const history =
+    recentSteps.length > 0
+      ? `**Record** · ${recentSteps.length} steps\n${recentSteps.join("\n")}`
+      : "**Record** · starting…";
+
+  const card = buildWorkingCard(display, history, stepCount, elapsed);
+  await client.updateCard(state.message_id, card);
+
+  steps.push(display);
+  writeState({
+    ...state,
+    step_count: stepCount,
+    steps: steps.slice(-20),
+  });
+}
+
+/**
+ * SubagentStop — show agent completion in steps.
+ */
+async function handleSubagentStop(): Promise<void> {
+  const state = readState();
+  if (!state?.enabled || !state.chat_id || !state.message_id) return;
+  if (!isBridgeSession()) return;
+
+  const input = JSON.parse(readStdin());
+  const sessionId: string = input.session_id || "";
+  if (state.session_id && state.session_id !== sessionId) return;
+
+  const agentType: string = input.agent_type || "subagent";
+
+  const client = await FeishuClient.create();
+  if (!client) return;
+
+  const now = Math.floor(Date.now() / 1000);
+  const startTime = state.start_time || now;
+  const stepCount = (state.step_count || 0) + 1;
+  const steps = state.steps || [];
+  const elapsed = formatTime(now - startTime);
+
+  const display = `✅ \`AGENT\` ${agentType} done`;
+
+  const recentSteps = steps.slice(-12);
+  const history =
+    recentSteps.length > 0
+      ? `**Record** · ${recentSteps.length} steps\n${recentSteps.join("\n")}`
+      : "**Record** · starting…";
+
+  const card = buildWorkingCard(display, history, stepCount, elapsed);
+  await client.updateCard(state.message_id, card);
+
+  steps.push(display);
+  writeState({
+    ...state,
+    step_count: stepCount,
+    steps: steps.slice(-20),
+  });
+}
+
+async function handleStop(): Promise<void> {
+  const raw = readStdin();
+  appendFileSync("/tmp/cc-hook-debug.log", `stop raw: ${raw}\n`);
+
+  const state = readState();
+  if (!state?.enabled || !state.chat_id || !state.message_id) return;
+  if (!isBridgeSession()) return;
+
+  const input = JSON.parse(raw);
   const sessionId: string = input.session_id || "";
 
   if (state.session_id && state.session_id !== sessionId) return;
@@ -170,10 +318,11 @@ async function handleStop(): Promise<void> {
   const card = buildDoneCard(history, stepCount, elapsed);
   await client.updateCard(state.message_id, card);
 
-  // Session ended — disable so next session starts clean
+  // Reset for next turn — keep enabled, keep session
   writeState({
-    enabled: false,
+    enabled: true,
     chat_id: state.chat_id,
+    session_id: state.session_id,
   });
 }
 
@@ -206,7 +355,6 @@ async function handleEnable(chatId?: string): Promise<void> {
     process.exit(1);
   }
 
-  // pending_bind: true — session_id will be captured by PostToolUse
   writeState({ enabled: true, chat_id: chatId, pending_bind: true });
   console.log(`Card mode enabled · chat: ${chatId} · awaiting session bind`);
 }
@@ -242,11 +390,20 @@ const [command, ...args] = process.argv.slice(2);
 
 try {
   switch (command) {
+    case "prompt":
+      await handlePrompt();
+      break;
     case "pre":
       await handlePre();
       break;
     case "post":
       await handlePost();
+      break;
+    case "subagent-start":
+      await handleSubagentStart();
+      break;
+    case "subagent-stop":
+      await handleSubagentStop();
       break;
     case "stop":
       await handleStop();
@@ -270,15 +427,22 @@ try {
       console.log("cc-hook — Claude Code Feishu Card Plugin");
       console.log("");
       console.log("Setup:");
-      console.log("  cc-hook install            Add hooks to Claude Code settings");
+      console.log(
+        "  cc-hook install            Add hooks to Claude Code settings",
+      );
       console.log("  cc-hook uninstall          Remove hooks");
-      console.log("  cc-hook on [chat_id]       Enable card mode (auto-detects chat)");
+      console.log(
+        "  cc-hook on [chat_id]       Enable card mode (auto-detects chat)",
+      );
       console.log("  cc-hook off                Disable card mode");
       console.log("  cc-hook status             Show current state");
       console.log("");
-      console.log("Hook handlers (called by Claude Code, not manually):");
+      console.log("Hook handlers (called by Claude Code):");
+      console.log("  cc-hook prompt             UserPromptSubmit");
       console.log("  cc-hook pre                PreToolUse");
       console.log("  cc-hook post               PostToolUse");
+      console.log("  cc-hook subagent-start     SubagentStart");
+      console.log("  cc-hook subagent-stop      SubagentStop");
       console.log("  cc-hook stop               Stop");
   }
 } catch {

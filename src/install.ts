@@ -4,33 +4,30 @@ import { join } from "node:path";
 
 const SETTINGS_PATH = join(homedir(), ".claude", "settings.json");
 
+// All hook events cc-hook handles
+const HOOK_EVENTS = [
+  { event: "UserPromptSubmit", command: "prompt", matcher: undefined },
+  { event: "PreToolUse", command: "pre", matcher: ".*" },
+  { event: "PostToolUse", command: "post", matcher: ".*" },
+  { event: "SubagentStart", command: "subagent-start", matcher: undefined },
+  { event: "SubagentStop", command: "subagent-stop", matcher: ".*" },
+  { event: "Stop", command: "stop", matcher: undefined },
+] as const;
+
 function makeHooksConfig(bin: string) {
-  return {
-    PreToolUse: [
-      {
-        matcher: ".*",
-        hooks: [{ type: "command", command: `${bin} pre`, timeout: 5 }],
-      },
-    ],
-    PostToolUse: [
-      {
-        matcher: ".*",
-        hooks: [{ type: "command", command: `${bin} post`, timeout: 5 }],
-      },
-    ],
-    Stop: [
-      {
-        matcher: ".*",
-        hooks: [{ type: "command", command: `${bin} stop`, timeout: 5 }],
-      },
-    ],
-  };
+  const config: Record<string, unknown[]> = {};
+  for (const { event, command, matcher } of HOOK_EVENTS) {
+    const entry: Record<string, unknown> = {
+      hooks: [{ type: "command", command: `${bin} ${command}`, timeout: 5 }],
+    };
+    if (matcher) entry.matcher = matcher;
+    config[event] = [entry];
+  }
+  return config;
 }
 
 // Detect the best command to use in hooks
 function detectBin(): string {
-  // If globally installed, `cc-hook` should be in PATH
-  // Otherwise fall back to absolute path of this script
   const selfPath = process.argv[1];
   if (selfPath) {
     return `node ${selfPath}`;
@@ -47,10 +44,20 @@ export function installHooks(): void {
 
   const settings = JSON.parse(readFileSync(SETTINGS_PATH, "utf-8"));
 
-  // Check if already installed
-  if (settings.hooks && JSON.stringify(settings.hooks).includes("cc-hook")) {
-    console.log("cc-hook already installed in Claude Code settings.");
-    return;
+  // Remove old cc-hook entries first (clean reinstall)
+  if (settings.hooks) {
+    for (const event of Object.keys(settings.hooks)) {
+      const hooks = settings.hooks[event];
+      if (Array.isArray(hooks)) {
+        settings.hooks[event] = hooks.filter(
+          (h: Record<string, unknown>) =>
+            !JSON.stringify(h).includes("cc-hook"),
+        );
+        if (settings.hooks[event].length === 0) {
+          delete settings.hooks[event];
+        }
+      }
+    }
   }
 
   const bin = detectBin();
@@ -60,14 +67,14 @@ export function installHooks(): void {
   console.log("Installed hooks into Claude Code settings.");
   console.log(`Binary: ${bin}`);
   console.log("");
+  console.log("Events registered:");
+  for (const { event, command } of HOOK_EVENTS) {
+    console.log(`  ${event.padEnd(20)} → cc-hook ${command}`);
+  }
+  console.log("");
   console.log("Next steps:");
   console.log("  1. Restart Claude Code to load hooks");
   console.log("  2. Enable card mode:  cc-hook on <chat_id>");
-  console.log("");
-  console.log("Get chat_id from mini-bridge logs:");
-  console.log(
-    '  grep "received message from feishu" ~/.mini-bridge/gateway.log | tail -1',
-  );
 }
 
 export function uninstallHooks(): void {
@@ -79,7 +86,7 @@ export function uninstallHooks(): void {
     return;
   }
 
-  for (const event of ["PreToolUse", "PostToolUse", "Stop"]) {
+  for (const event of Object.keys(settings.hooks)) {
     const hooks = settings.hooks[event];
     if (Array.isArray(hooks)) {
       settings.hooks[event] = hooks.filter(

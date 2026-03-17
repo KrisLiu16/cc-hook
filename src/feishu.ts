@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, appendFileSync, existsSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -27,18 +27,18 @@ function readConfig(): Config | null {
   return { app_id: appId, app_secret: appSecret };
 }
 
-async function getToken(config: Config): Promise<string | null> {
-  if (existsSync(TOKEN_CACHE)) {
-    try {
-      const cache: TokenCache = JSON.parse(
-        readFileSync(TOKEN_CACHE, "utf-8"),
-      );
-      if (Date.now() / 1000 < cache.exp) return cache.token;
-    } catch {
-      /* expired or corrupt */
-    }
+function readCachedToken(): string | null {
+  if (!existsSync(TOKEN_CACHE)) return null;
+  try {
+    const cache: TokenCache = JSON.parse(readFileSync(TOKEN_CACHE, "utf-8"));
+    if (Date.now() / 1000 < cache.exp) return cache.token;
+  } catch {
+    /* corrupt */
   }
+  return null;
+}
 
+async function fetchToken(config: Config): Promise<string | null> {
   try {
     const resp = await fetch(
       `${API}/open-apis/auth/v3/tenant_access_token/internal`,
@@ -63,19 +63,49 @@ async function getToken(config: Config): Promise<string | null> {
   }
 }
 
+function invalidateCache(): void {
+  try {
+    unlinkSync(TOKEN_CACHE);
+  } catch {
+    /* already gone */
+  }
+}
+
+/** Response code indicating invalid/expired token */
+function isTokenError(code: number): boolean {
+  return code === 99991663 || code === 99991661 || code === 99991664;
+}
+
+interface ApiResponse {
+  code?: number;
+  data?: Record<string, unknown>;
+}
+
 export class FeishuClient {
-  private constructor(private token: string) {}
+  private constructor(
+    private token: string,
+    private config: Config,
+  ) {}
 
   static async create(): Promise<FeishuClient | null> {
     const config = readConfig();
     if (!config) return null;
-    const token = await getToken(config);
+    const token = readCachedToken() || (await fetchToken(config));
     if (!token) return null;
-    return new FeishuClient(token);
+    return new FeishuClient(token, config);
+  }
+
+  /** Refresh token and update instance */
+  private async refresh(): Promise<boolean> {
+    invalidateCache();
+    const token = await fetchToken(this.config);
+    if (!token) return false;
+    this.token = token;
+    return true;
   }
 
   async sendCard(chatId: string, card: object): Promise<string | undefined> {
-    try {
+    const doSend = async () => {
       const resp = await fetch(
         `${API}/open-apis/im/v1/messages?receive_id_type=chat_id`,
         {
@@ -92,26 +122,45 @@ export class FeishuClient {
           signal: AbortSignal.timeout(3000),
         },
       );
-      const data = (await resp.json()) as {
-        data?: { message_id?: string };
-      };
-      return data.data?.message_id;
-    } catch {
+      return (await resp.json()) as ApiResponse;
+    };
+
+    try {
+      let data = await doSend();
+      if (isTokenError(data.code || 0) && (await this.refresh())) {
+        data = await doSend();
+      }
+      const msgId = (data.data as { message_id?: string })?.message_id;
+      appendFileSync("/tmp/cc-hook-debug.log", `feishu sendCard code=${data.code} msgId=${msgId}\n`);
+      return msgId;
+    } catch (e) {
+      appendFileSync("/tmp/cc-hook-debug.log", `feishu sendCard error: ${e}\n`);
       return undefined;
     }
   }
 
   async updateCard(messageId: string, card: object): Promise<void> {
-    try {
-      await fetch(`${API}/open-apis/im/v1/messages/${messageId}`, {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          "Content-Type": "application/json",
+    const doUpdate = async () => {
+      const resp = await fetch(
+        `${API}/open-apis/im/v1/messages/${messageId}`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ content: JSON.stringify(card) }),
+          signal: AbortSignal.timeout(3000),
         },
-        body: JSON.stringify({ content: JSON.stringify(card) }),
-        signal: AbortSignal.timeout(3000),
-      });
+      );
+      return (await resp.json()) as ApiResponse;
+    };
+
+    try {
+      const data = await doUpdate();
+      if (isTokenError(data.code || 0) && (await this.refresh())) {
+        await doUpdate();
+      }
     } catch {
       /* best-effort */
     }

@@ -8,92 +8,172 @@ function shortPath(p: string): string {
 
 type ToolInput = Record<string, unknown>;
 
+const TOOL_EMOJI: Record<string, string> = {
+  Read: "📖",
+  Edit: "✏️",
+  Write: "📝",
+  Bash: "⚡",
+  Grep: "🔍",
+  Glob: "📁",
+  Agent: "🤖",
+  WebFetch: "🌐",
+  WebSearch: "🔎",
+  LSP: "🧩",
+  Skill: "🎯",
+  NotebookEdit: "📓",
+};
+
 export function toolDisplay(tool: string, input: ToolInput): string {
   const str = (key: string) => (input[key] as string) || "";
+  const emoji = TOOL_EMOJI[tool] || "⚙️";
 
   switch (tool) {
     case "Read":
-      return `\`READ\`  ${shortPath(str("file_path"))}`;
+      return `${emoji} \`READ\`  ${shortPath(str("file_path"))}`;
     case "Edit":
-      return `\`EDIT\`  ${shortPath(str("file_path"))}`;
+      return `${emoji} \`EDIT\`  ${shortPath(str("file_path"))}`;
     case "Write":
-      return `\`WRITE\` ${shortPath(str("file_path"))}`;
+      return `${emoji} \`WRITE\` ${shortPath(str("file_path"))}`;
     case "Bash": {
-      const cmd = str("command").split("\n")[0]; // first line only
-      const short = cmd.slice(0, 60);
-      return `\`BASH\`  \`${short}${cmd.length > 60 ? "…" : ""}\``;
+      const cmd = str("command").split("\n")[0];
+      const short = cmd.slice(0, 55);
+      return `${emoji} \`BASH\`  \`${short}${cmd.length > 55 ? "…" : ""}\``;
     }
     case "Grep":
-      return `\`GREP\`  \`${str("pattern")}\`${str("path") ? ` in ${shortPath(str("path"))}` : ""}`;
+      return `${emoji} \`GREP\`  \`${str("pattern")}\`${str("path") ? ` in ${shortPath(str("path"))}` : ""}`;
     case "Glob":
-      return `\`GLOB\`  \`${str("pattern")}\``;
+      return `${emoji} \`GLOB\`  \`${str("pattern")}\``;
     case "Agent":
-      return `\`AGENT\` ${str("description")}`;
+      return `${emoji} \`AGENT\` ${str("description")}`;
     case "WebFetch":
-      return `\`FETCH\` ${str("url").slice(0, 50)}`;
+      return `${emoji} \`FETCH\` ${str("url").slice(0, 50)}`;
     case "WebSearch":
-      return `\`SEARCH\` ${str("query")}`;
+      return `${emoji} \`SEARCH\` ${str("query")}`;
     case "LSP":
-      return `\`LSP\`   ${str("operation")} ${shortPath(str("filePath"))}`;
+      return `${emoji} \`LSP\`   ${str("operation")} ${shortPath(str("filePath"))}`;
     case "Skill":
-      return `\`SKILL\` ${str("skill")}`;
+      return `${emoji} \`SKILL\` ${str("skill")}`;
     case "NotebookEdit":
-      return `\`NOTEBOOK\` edit`;
+      return `${emoji} \`NOTEBOOK\` edit`;
     default:
-      return `\`${tool.toUpperCase()}\``;
+      return `${emoji} \`${tool.toUpperCase()}\``;
   }
 }
 
-/**
- * Schema 2.0 card with body.elements — renders markdown properly
- * (code blocks, inline code, tables, bold/italic all work)
- */
-function card2(
-  header: { title: string; template: string },
-  markdown: string,
-) {
+// --- Card JSON 2.0 builders ---
+
+interface CardHeader {
+  title: { tag: "plain_text"; content: string };
+  subtitle?: { tag: "plain_text"; content: string };
+  template: string;
+  icon?: { tag: "standard_icon"; token: string; color?: string };
+  text_tag_list?: Array<{
+    tag: "text_tag";
+    text: { tag: "plain_text"; content: string };
+    color: string;
+  }>;
+}
+
+function makeHeader(opts: {
+  title: string;
+  subtitle?: string;
+  template: string;
+  icon: string;
+  tagText: string;
+  tagColor: string;
+}): CardHeader {
+  const header: CardHeader = {
+    title: { tag: "plain_text", content: opts.title },
+    template: opts.template,
+    icon: { tag: "standard_icon", token: opts.icon },
+    text_tag_list: [
+      {
+        tag: "text_tag",
+        text: { tag: "plain_text", content: opts.tagText },
+        color: opts.tagColor,
+      },
+    ],
+  };
+  if (opts.subtitle) {
+    header.subtitle = { tag: "plain_text", content: opts.subtitle };
+  }
+  return header;
+}
+
+/** Thinking card — shown immediately when user submits prompt */
+export function buildThinkingCard(prompt: string) {
+  const short = prompt.length > 80 ? prompt.slice(0, 80) + "…" : prompt;
   return {
     schema: "2.0",
     config: { wide_screen_mode: true },
-    header: {
-      title: { tag: "plain_text", content: header.title },
-      template: header.template,
-    },
+    header: makeHeader({
+      title: "Claude Code",
+      subtitle: "thinking…",
+      template: "blue",
+      icon: "chat_outlined",
+      tagText: "思考中",
+      tagColor: "blue",
+    }),
     body: {
-      elements: [{ tag: "markdown", content: markdown }],
+      elements: [
+        { tag: "markdown", content: `💬 ${short}` },
+        { tag: "markdown", content: `<font color='grey'>waiting for first action…</font>` },
+      ],
     },
   };
 }
 
+/** Working card — updated on each tool call */
 export function buildWorkingCard(
   current: string,
   history: string,
   stepCount: number,
   elapsed: string,
 ) {
-  const lines = [
-    `▸  ${current}`,
-    "",
-    "---",
-    "",
-    history,
-    "",
-    `step ${stepCount} · ${elapsed}`,
-  ];
-  return card2(
-    { title: "Claude Code · Working", template: "blue" },
-    lines.join("\n"),
-  );
+  return {
+    schema: "2.0",
+    config: { wide_screen_mode: true },
+    header: makeHeader({
+      title: "Claude Code",
+      subtitle: `step ${stepCount} · ${elapsed}`,
+      template: "blue",
+      icon: "loop_outlined",
+      tagText: "执行中",
+      tagColor: "blue",
+    }),
+    body: {
+      elements: [
+        { tag: "markdown", content: `▸ ${current}` },
+        { tag: "hr" },
+        { tag: "markdown", content: history },
+        { tag: "markdown", content: `<font color='grey'>step ${stepCount} · ${elapsed}</font>` },
+      ],
+    },
+  };
 }
 
+/** Done card — final state */
 export function buildDoneCard(
   history: string,
   stepCount: number,
   elapsed: string,
 ) {
-  const lines = [history, "", `done · ${stepCount} steps · ${elapsed}`];
-  return card2(
-    { title: "Claude Code · Done", template: "green" },
-    lines.join("\n"),
-  );
+  return {
+    schema: "2.0",
+    config: { wide_screen_mode: true },
+    header: makeHeader({
+      title: "Claude Code",
+      subtitle: `${stepCount} steps · ${elapsed}`,
+      template: "green",
+      icon: "succeed_outlined",
+      tagText: "已完成",
+      tagColor: "green",
+    }),
+    body: {
+      elements: [
+        { tag: "markdown", content: history },
+        { tag: "markdown", content: `<font color='grey'>done · ${stepCount} steps · ${elapsed}</font>` },
+      ],
+    },
+  };
 }
