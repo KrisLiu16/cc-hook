@@ -9,42 +9,60 @@ function shortPath(p: string): string {
 type ToolInput = Record<string, unknown>;
 
 export function toolDisplay(tool: string, input: ToolInput): string {
-  const tag = `\`${tool.toUpperCase()}\``;
   const str = (key: string) => (input[key] as string) || "";
 
   switch (tool) {
     case "Read":
-      return `${tag}  ${shortPath(str("file_path"))}`;
+      return `\`READ\`  ${shortPath(str("file_path"))}`;
     case "Edit":
-      return `${tag}  ${shortPath(str("file_path"))}`;
+      return `\`EDIT\`  ${shortPath(str("file_path"))}`;
     case "Write":
-      return `${tag}  ${shortPath(str("file_path"))}`;
+      return `\`WRITE\` ${shortPath(str("file_path"))}`;
     case "Bash": {
-      const cmd = str("command");
+      const cmd = str("command").split("\n")[0]; // first line only
       const short = cmd.slice(0, 60);
-      return `${tag}  ${short}${cmd.length > 60 ? "…" : ""}`;
+      return `\`BASH\`  \`${short}${cmd.length > 60 ? "…" : ""}\``;
     }
-    case "Grep": {
-      const path = str("path");
-      return `${tag}  "${str("pattern")}"${path ? ` in ${shortPath(path)}` : ""}`;
-    }
+    case "Grep":
+      return `\`GREP\`  \`${str("pattern")}\`${str("path") ? ` in ${shortPath(str("path"))}` : ""}`;
     case "Glob":
-      return `${tag}  ${str("pattern")}`;
+      return `\`GLOB\`  \`${str("pattern")}\``;
     case "Agent":
-      return `${tag}  ${str("description")}`;
+      return `\`AGENT\` ${str("description")}`;
     case "WebFetch":
-      return `${tag}  ${str("url").slice(0, 50)}`;
+      return `\`FETCH\` ${str("url").slice(0, 50)}`;
     case "WebSearch":
-      return `${tag}  ${str("query")}`;
+      return `\`SEARCH\` ${str("query")}`;
     case "LSP":
-      return `${tag}  ${str("operation")} ${shortPath(str("filePath"))}`;
+      return `\`LSP\`   ${str("operation")} ${shortPath(str("filePath"))}`;
     case "Skill":
-      return `${tag}  ${str("skill")}`;
+      return `\`SKILL\` ${str("skill")}`;
     case "NotebookEdit":
-      return `${tag}  edit`;
+      return `\`NOTEBOOK\` edit`;
     default:
-      return tag;
+      return `\`${tool.toUpperCase()}\``;
   }
+}
+
+/**
+ * Schema 2.0 card with body.elements — renders markdown properly
+ * (code blocks, inline code, tables, bold/italic all work)
+ */
+function card2(
+  header: { title: string; template: string },
+  markdown: string,
+) {
+  return {
+    schema: "2.0",
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: "plain_text", content: header.title },
+      template: header.template,
+    },
+    body: {
+      elements: [{ tag: "markdown", content: markdown }],
+    },
+  };
 }
 
 export function buildWorkingCard(
@@ -53,27 +71,19 @@ export function buildWorkingCard(
   stepCount: number,
   elapsed: string,
 ) {
-  return {
-    config: { wide_screen_mode: true },
-    header: {
-      title: { tag: "plain_text" as const, content: "Claude Code · Working" },
-      template: "blue",
-    },
-    elements: [
-      { tag: "markdown" as const, content: `▸ ${current}` },
-      { tag: "hr" as const },
-      { tag: "markdown" as const, content: history },
-      {
-        tag: "note" as const,
-        elements: [
-          {
-            tag: "plain_text" as const,
-            content: `step ${stepCount} · ${elapsed}`,
-          },
-        ],
-      },
-    ],
-  };
+  const lines = [
+    `▸  ${current}`,
+    "",
+    "---",
+    "",
+    history,
+    "",
+    `step ${stepCount} · ${elapsed}`,
+  ];
+  return card2(
+    { title: "Claude Code · Working", template: "blue" },
+    lines.join("\n"),
+  );
 }
 
 export function buildDoneCard(
@@ -81,23 +91,9 @@ export function buildDoneCard(
   stepCount: number,
   elapsed: string,
 ) {
-  return {
-    config: { wide_screen_mode: true },
-    header: {
-      title: { tag: "plain_text" as const, content: "Claude Code · Done" },
-      template: "green",
-    },
-    elements: [
-      { tag: "markdown" as const, content: history },
-      {
-        tag: "note" as const,
-        elements: [
-          {
-            tag: "plain_text" as const,
-            content: `done · ${stepCount} steps · ${elapsed}`,
-          },
-        ],
-      },
-    ],
-  };
+  const lines = [history, "", `done · ${stepCount} steps · ${elapsed}`];
+  return card2(
+    { title: "Claude Code · Done", template: "green" },
+    lines.join("\n"),
+  );
 }
