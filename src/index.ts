@@ -12,6 +12,7 @@ const STATE_PATH = "/tmp/cc-hook-state.json";
 interface State {
   enabled: boolean;
   chat_id: string;
+  session_id?: string; // bound session — only this session sends cards
   message_id?: string;
   step_count?: number;
   start_time?: number;
@@ -74,6 +75,16 @@ async function handlePre(): Promise<void> {
   if (!state?.enabled || !state.chat_id) return;
 
   const input = JSON.parse(readStdin());
+  const sessionId: string = input.session_id || "";
+
+  // Session binding: only the bound session sends cards
+  if (state.session_id) {
+    if (state.session_id !== sessionId) return; // wrong session, skip
+  } else if (sessionId) {
+    // First hook after `cc-hook on` — capture this session
+    state.session_id = sessionId;
+  }
+
   const toolName: string = input.tool_name || "";
   if (isFiltered(toolName)) return;
 
@@ -116,6 +127,12 @@ async function handleStop(): Promise<void> {
   const state = readState();
   if (!state?.enabled || !state.chat_id || !state.message_id) return;
 
+  const input = JSON.parse(readStdin());
+  const sessionId: string = input.session_id || "";
+
+  // Only the bound session can finalize the card
+  if (state.session_id && state.session_id !== sessionId) return;
+
   const client = await FeishuClient.create();
   if (!client) return;
 
@@ -132,7 +149,12 @@ async function handleStop(): Promise<void> {
   const card = buildDoneCard(history, stepCount, elapsed);
   await client.updateCard(state.message_id, card);
 
-  writeState({ enabled: state.enabled, chat_id: state.chat_id });
+  // Reset card state, keep session binding
+  writeState({
+    enabled: state.enabled,
+    chat_id: state.chat_id,
+    session_id: state.session_id,
+  });
 }
 
 async function handleEnable(chatId?: string): Promise<void> {
@@ -185,6 +207,7 @@ function handleStatus(): void {
   }
   console.log(`Status:   ${state.enabled ? "enabled" : "disabled"}`);
   console.log(`Chat:     ${state.chat_id}`);
+  console.log(`Session:  ${state.session_id || "(awaiting binding)"}`);
   if (state.message_id) console.log(`Card:     ${state.message_id}`);
   if (state.step_count) console.log(`Steps:    ${state.step_count}`);
 }
