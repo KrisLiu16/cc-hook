@@ -1,0 +1,31 @@
+{
+  "name": "cc-hook",
+  "version": "0.1.0",
+  "description": "Claude Code → Feishu card real-time status plugin",
+  "type": "module",
+  "bin": {
+    "cc-hook": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "tsc"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  },
+  "keywords": [
+    "claude-code",
+    "feishu",
+    "lark",
+    "hook",
+    "plugin"
+  ],
+  "license": "MIT"
+}
