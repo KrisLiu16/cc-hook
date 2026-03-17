@@ -7,6 +7,8 @@ import {
   buildThinkingCard,
   buildWorkingCard,
   buildDoneCard,
+  buildReplyCard,
+  toFeishuMarkdown,
   toolDisplay,
 } from "./card.js";
 import { installHooks, uninstallHooks } from "./install.js";
@@ -42,6 +44,7 @@ interface State {
   step_count?: number;
   start_time?: number;
   steps?: string[];
+  bot_name?: string;
 }
 
 function readState(): State | null {
@@ -85,6 +88,46 @@ function isFiltered(name: string): boolean {
   return false;
 }
 
+// --- Token counting ---
+
+interface TokenStats {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreate: number;
+}
+
+function countTokens(transcriptPath: string): TokenStats {
+  const stats: TokenStats = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
+  try {
+    const lines = readFileSync(transcriptPath, "utf-8").trim().split("\n");
+    // Sum output across all turns, but use last message for context size
+    let lastUsage: Record<string, number> | null = null;
+    for (const line of lines) {
+      const entry = JSON.parse(line);
+      const usage = entry?.message?.usage;
+      if (!usage) continue;
+      stats.output += usage.output_tokens || 0;
+      lastUsage = usage;
+    }
+    // Context size ≈ last message's cache_read + cache_creation + input
+    if (lastUsage) {
+      stats.input = lastUsage.input_tokens || 0;
+      stats.cacheRead = lastUsage.cache_read_input_tokens || 0;
+      stats.cacheCreate = lastUsage.cache_creation_input_tokens || 0;
+    }
+  } catch {
+    /* best effort */
+  }
+  return stats;
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return `${n}`;
+}
+
 // --- Helpers ---
 
 function formatTime(s: number): string {
@@ -119,10 +162,17 @@ async function handlePrompt(): Promise<void> {
   const client = await FeishuClient.create();
   if (!client) return;
 
+  // Fetch and cache bot name
+  if (!state.bot_name) {
+    const name = await client.getBotName();
+    if (name) state.bot_name = name;
+  }
+
   const now = Math.floor(Date.now() / 1000);
+  const botName = state.bot_name || "MiniMax AI";
 
   // Reset state for new turn — create fresh card
-  const card = buildThinkingCard(prompt);
+  const card = buildThinkingCard(prompt, botName);
   const messageId = await client.sendCard(state.chat_id, card);
 
   writeState({
@@ -167,7 +217,8 @@ async function handlePre(): Promise<void> {
       ? `**Record** · ${recentSteps.length} steps\n${recentSteps.join("\n")}`
       : "**Record** · starting…";
 
-  const card = buildWorkingCard(display, history, stepCount, elapsed);
+  const botName = state.bot_name || "MiniMax AI";
+  const card = buildWorkingCard(display, history, stepCount, elapsed, botName);
 
   let messageId = state.message_id;
   if (!messageId) {
@@ -236,7 +287,8 @@ async function handleSubagentStart(): Promise<void> {
       ? `**Record** · ${recentSteps.length} steps\n${recentSteps.join("\n")}`
       : "**Record** · starting…";
 
-  const card = buildWorkingCard(display, history, stepCount, elapsed);
+  const botName = state.bot_name || "MiniMax AI";
+  const card = buildWorkingCard(display, history, stepCount, elapsed, botName);
   await client.updateCard(state.message_id, card);
 
   steps.push(display);
@@ -278,7 +330,8 @@ async function handleSubagentStop(): Promise<void> {
       ? `**Record** · ${recentSteps.length} steps\n${recentSteps.join("\n")}`
       : "**Record** · starting…";
 
-  const card = buildWorkingCard(display, history, stepCount, elapsed);
+  const botName = state.bot_name || "MiniMax AI";
+  const card = buildWorkingCard(display, history, stepCount, elapsed, botName);
   await client.updateCard(state.message_id, card);
 
   steps.push(display);
@@ -291,17 +344,32 @@ async function handleSubagentStop(): Promise<void> {
 
 async function handleStop(): Promise<void> {
   const raw = readStdin();
-  appendFileSync("/tmp/cc-hook-debug.log", `stop raw: ${raw}\n`);
+  appendFileSync("/tmp/cc-hook-debug.log", `stop raw: ${raw.slice(0, 500)}\n`);
 
   const state = readState();
-  if (!state?.enabled || !state.chat_id || !state.message_id) return;
+  if (!state?.enabled || !state.chat_id) return;
   if (!isBridgeSession()) return;
 
   const input = JSON.parse(raw);
   const sessionId: string = input.session_id || "";
+  const stopHookActive: boolean = input.stop_hook_active || false;
+  const lastMessage: string = input.last_assistant_message || "";
 
   if (state.session_id && state.session_id !== sessionId) return;
 
+  // --- Second stop (after block) — just reset and let Claude stop ---
+  if (stopHookActive) {
+    appendFileSync("/tmp/cc-hook-debug.log", `stop: second pass, allowing stop\n`);
+    writeState({
+      enabled: true,
+      chat_id: state.chat_id,
+      session_id: state.session_id,
+      bot_name: state.bot_name,
+    });
+    return; // exit 0 → Claude stops
+  }
+
+  // --- First stop — send reply card, then terminate ---
   const client = await FeishuClient.create();
   if (!client) return;
 
@@ -309,21 +377,42 @@ async function handleStop(): Promise<void> {
   const elapsed = formatTime(now - (state.start_time || now));
   const stepCount = state.step_count || 0;
   const steps = state.steps || [];
-
   const history =
     steps.length > 0
       ? `**Record** · ${steps.length} steps\n${steps.join("\n")}`
-      : "**Record** · no tool calls";
+      : "";
 
-  const card = buildDoneCard(history, stepCount, elapsed);
-  await client.updateCard(state.message_id, card);
+  const botName = state.bot_name || "MiniMax AI";
 
-  // Reset for next turn — keep enabled, keep session
-  writeState({
-    enabled: true,
-    chat_id: state.chat_id,
-    session_id: state.session_id,
-  });
+  // 1. Update existing card to "done" (execution history only)
+  if (state.message_id) {
+    const doneCard = buildDoneCard(history || "**Record** · no tool calls", stepCount, elapsed, botName);
+    await client.updateCard(state.message_id, doneCard);
+  }
+
+  // 2. Send a separate reply card
+  if (lastMessage) {
+    const reply = toFeishuMarkdown(lastMessage);
+    const replyCard = buildReplyCard(reply, botName);
+    await client.sendCard(state.chat_id, replyCard);
+  }
+
+  appendFileSync("/tmp/cc-hook-debug.log", `stop: first pass, blocking → summary\n`);
+
+  // Build a short status line for bridge to forward
+  const transcriptPath: string = input.transcript_path || "";
+  const tokens = transcriptPath ? countTokens(transcriptPath) : { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
+  const ctx = tokens.input + tokens.cacheRead + tokens.cacheCreate;
+  const pct = Math.round((ctx / 1_000_000) * 100);
+  const filled = Math.round(pct / 10);
+  const bar = "▰".repeat(filled) + "▱".repeat(10 - filled);
+  const statusLine = `${bar} ${formatTokens(ctx)} / 1M (${pct}%)`;
+
+  const decision = {
+    decision: "block",
+    reason: `Your reply has been delivered to the user as a formatted Feishu card. To finish this turn, output ONLY this exact text and nothing else:\n\n${statusLine}`,
+  };
+  process.stdout.write(JSON.stringify(decision));
 }
 
 async function handleEnable(chatId?: string): Promise<void> {

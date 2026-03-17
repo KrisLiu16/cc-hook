@@ -101,13 +101,13 @@ function makeHeader(opts: {
 }
 
 /** Thinking card — shown immediately when user submits prompt */
-export function buildThinkingCard(prompt: string) {
+export function buildThinkingCard(prompt: string, botName = "MiniMax AI") {
   const short = prompt.length > 80 ? prompt.slice(0, 80) + "…" : prompt;
   return {
     schema: "2.0",
     config: { wide_screen_mode: true },
     header: makeHeader({
-      title: "Claude Code",
+      title: botName,
       subtitle: "thinking…",
       template: "blue",
       icon: "chat_outlined",
@@ -129,12 +129,13 @@ export function buildWorkingCard(
   history: string,
   stepCount: number,
   elapsed: string,
+  botName = "MiniMax AI",
 ) {
   return {
     schema: "2.0",
     config: { wide_screen_mode: true },
     header: makeHeader({
-      title: "Claude Code",
+      title: botName,
       subtitle: `step ${stepCount} · ${elapsed}`,
       template: "blue",
       icon: "loop_outlined",
@@ -152,17 +153,27 @@ export function buildWorkingCard(
   };
 }
 
-/** Done card — final state */
+/** Convert standard markdown to Feishu card-compatible markdown */
+export function toFeishuMarkdown(md: string): string {
+  return md
+    // Headers → bold (Feishu cards don't support # headers)
+    .replace(/^#{1,6}\s+(.+)$/gm, "**$1**")
+    // Blockquotes → just remove the > prefix
+    .replace(/^>\s?/gm, "");
+}
+
+/** Done card — final state (no reply) */
 export function buildDoneCard(
   history: string,
   stepCount: number,
   elapsed: string,
+  botName = "MiniMax AI",
 ) {
   return {
     schema: "2.0",
     config: { wide_screen_mode: true },
     header: makeHeader({
-      title: "Claude Code",
+      title: botName,
       subtitle: `${stepCount} steps · ${elapsed}`,
       template: "green",
       icon: "succeed_outlined",
@@ -174,6 +185,28 @@ export function buildDoneCard(
         { tag: "markdown", content: history },
         { tag: "markdown", content: `<font color='grey'>done · ${stepCount} steps · ${elapsed}</font>` },
       ],
+    },
+  };
+}
+
+/** Reply card — standalone card for the formatted response */
+export function buildReplyCard(reply: string, botName = "MiniMax AI") {
+  const maxLen = 2500;
+  const truncated =
+    reply.length > maxLen ? reply.slice(0, maxLen) + "\n\n…(truncated)" : reply;
+
+  return {
+    schema: "2.0",
+    config: { wide_screen_mode: true },
+    header: makeHeader({
+      title: botName,
+      template: "purple",
+      icon: "chat_outlined",
+      tagText: "回复",
+      tagColor: "purple",
+    }),
+    body: {
+      elements: [{ tag: "markdown", content: truncated }],
     },
   };
 }

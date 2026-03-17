@@ -139,6 +139,19 @@ export class FeishuClient {
     }
   }
 
+  async getBotName(): Promise<string | null> {
+    try {
+      const resp = await fetch(`${API}/open-apis/bot/v3/info/`, {
+        headers: { Authorization: `Bearer ${this.token}` },
+        signal: AbortSignal.timeout(3000),
+      });
+      const data = (await resp.json()) as { bot?: { app_name?: string } };
+      return data.bot?.app_name || null;
+    } catch {
+      return null;
+    }
+  }
+
   async updateCard(messageId: string, card: object): Promise<void> {
     const doUpdate = async () => {
       const resp = await fetch(
