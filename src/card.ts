@@ -214,7 +214,33 @@ function stepToDiv(step: StepInfo) {
   };
 }
 
-// --- Shared collapsible panel for history ---
+// --- Shared collapsible panels ---
+
+function makeCollapsiblePanel(content: string, label: string, iconToken = "info_outlined") {
+  return {
+    tag: "collapsible_panel",
+    expanded: false,
+    header: {
+      title: { tag: "plain_text", content: label },
+      vertical_align: "center",
+      padding: "4px 0px 4px 8px",
+      icon: {
+        tag: "standard_icon",
+        token: iconToken,
+        color: "grey",
+        size: "16px 16px",
+      },
+      icon_position: "right",
+      icon_expanded_angle: 180,
+    },
+    vertical_spacing: "2px",
+    background_color: "default",
+    border: { color: "grey", corner_radius: "5px" },
+    elements: [{ tag: "markdown", content }],
+  };
+}
+
+// --- Collapsible history (div + icon steps) ---
 
 function makeCollapsibleHistory(steps: StepInfo[], label: string) {
   return {
@@ -247,6 +273,7 @@ export function buildDoneCard(
   stepCount: number,
   elapsed: string,
   botName = "MiniMax AI",
+  thinking = "",
 ) {
   const maxLen = 2500;
   const truncated =
@@ -262,8 +289,16 @@ export function buildDoneCard(
     elements.push({ tag: "markdown", content: truncated });
   }
 
-  if (allSteps.length > 0) {
+  if (thinking) {
+    const thinkTrunc = thinking.length > 1500
+      ? thinking.slice(0, 1500) + "\n\n…(truncated)"
+      : thinking;
     if (truncated) elements.push({ tag: "hr" });
+    elements.push(makeCollapsiblePanel(thinkTrunc, "Thinking", "thought_outlined"));
+  }
+
+  if (allSteps.length > 0) {
+    if (!thinking && truncated) elements.push({ tag: "hr" });
     elements.push(makeCollapsibleHistory(allSteps, `执行记录 · ${stepCount} steps`));
   }
 

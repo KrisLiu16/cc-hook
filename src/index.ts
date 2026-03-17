@@ -123,6 +123,23 @@ function countTokens(transcriptPath: string): TokenStats {
   return stats;
 }
 
+function getLastThinking(transcriptPath: string): string {
+  try {
+    const lines = readFileSync(transcriptPath, "utf-8").trim().split("\n");
+    // Search from end for the last assistant message with thinking
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const entry = JSON.parse(lines[i]);
+      if (entry?.type !== "assistant") continue;
+      const content = entry?.message?.content;
+      if (!Array.isArray(content)) continue;
+      for (const c of content) {
+        if (c?.type === "thinking" && c.thinking) return c.thinking;
+      }
+    }
+  } catch { /* best effort */ }
+  return "";
+}
+
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
@@ -184,6 +201,7 @@ async function handlePrompt(): Promise<void> {
     start_time: now,
     steps: [],
   });
+
 }
 
 async function handlePre(): Promise<void> {
@@ -278,14 +296,14 @@ async function handleSubagentStart(): Promise<void> {
   const steps: StepInfo[] = state.steps || [];
   const elapsed = formatTime(now - startTime);
 
-  const display = `AGENT ${agentType} spawned`;
+  const display = `Sub-Agent: ${agentType}`;
   const pastSteps = steps.slice(-12);
 
   const botName = state.bot_name || "MiniMax AI";
   const card = buildWorkingCard(display, pastSteps, stepCount, elapsed, botName, "Agent");
   await client.updateCard(state.message_id, card);
 
-  steps.push({ tool: "Agent", label: `AGENT ${agentType} spawned` });
+  steps.push({ tool: "Agent", label: `Sub-Agent: ${agentType}` });
   writeState({
     ...state,
     step_count: stepCount,
@@ -316,14 +334,14 @@ async function handleSubagentStop(): Promise<void> {
   const steps: StepInfo[] = state.steps || [];
   const elapsed = formatTime(now - startTime);
 
-  const display = `AGENT ${agentType} done`;
+  const display = `Sub-Agent: ${agentType} Done`;
   const pastSteps = steps.slice(-12);
 
   const botName = state.bot_name || "MiniMax AI";
   const card = buildWorkingCard(display, pastSteps, stepCount, elapsed, botName, "Agent");
   await client.updateCard(state.message_id, card);
 
-  steps.push({ tool: "Agent", label: `AGENT ${agentType} done` });
+  steps.push({ tool: "Agent", label: `Sub-Agent: ${agentType} Done` });
   writeState({
     ...state,
     step_count: stepCount,
@@ -369,13 +387,15 @@ async function handleStop(): Promise<void> {
 
   const botName = state.bot_name || "MiniMax AI";
   const reply = lastMessage ? toFeishuMarkdown(lastMessage) : "";
+  const tPath: string = input.transcript_path || "";
+  const thinking = tPath ? getLastThinking(tPath) : "";
 
-  // Update existing card to done (reply + collapsible history)
+  // Update existing card to done (reply + collapsible history + thinking)
   if (state.message_id) {
-    const doneCard = buildDoneCard(reply, steps, stepCount, elapsed, botName);
+    const doneCard = buildDoneCard(reply, steps, stepCount, elapsed, botName, thinking);
     await client.updateCard(state.message_id, doneCard);
   } else if (reply) {
-    const doneCard = buildDoneCard(reply, steps, stepCount, elapsed, botName);
+    const doneCard = buildDoneCard(reply, steps, stepCount, elapsed, botName, thinking);
     await client.sendCard(state.chat_id, doneCard);
   }
 
