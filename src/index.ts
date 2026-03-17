@@ -98,24 +98,29 @@ interface TokenStats {
   cacheCreate: number;
 }
 
+/** Read first N and last N lines of a file (deduped if file < 2N lines) */
+function headTailLines(filePath: string, n: number): string[] {
+  try {
+    const buf = readFileSync(filePath, "utf-8");
+    const lines = buf.trimEnd().split("\n");
+    if (lines.length <= n * 2) return lines;
+    return [...lines.slice(0, n), ...lines.slice(-n)];
+  } catch { return []; }
+}
+
 function countTokens(transcriptPath: string): TokenStats {
   const stats: TokenStats = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
   try {
-    const lines = readFileSync(transcriptPath, "utf-8").trim().split("\n");
-    // Sum output across all turns, but use last message for context size
-    let lastUsage: Record<string, number> | null = null;
+    const lines = headTailLines(transcriptPath, 50);
+    // Sum output from all sampled lines, context from last message
     for (const line of lines) {
       const entry = JSON.parse(line);
       const usage = entry?.message?.usage;
       if (!usage) continue;
       stats.output += usage.output_tokens || 0;
-      lastUsage = usage;
-    }
-    // Context size ≈ last message's cache_read + cache_creation + input
-    if (lastUsage) {
-      stats.input = lastUsage.input_tokens || 0;
-      stats.cacheRead = lastUsage.cache_read_input_tokens || 0;
-      stats.cacheCreate = lastUsage.cache_creation_input_tokens || 0;
+      stats.input = usage.input_tokens || 0;
+      stats.cacheRead = usage.cache_read_input_tokens || 0;
+      stats.cacheCreate = usage.cache_creation_input_tokens || 0;
     }
   } catch {
     /* best effort */
@@ -125,8 +130,7 @@ function countTokens(transcriptPath: string): TokenStats {
 
 function getLastThinking(transcriptPath: string): string {
   try {
-    const lines = readFileSync(transcriptPath, "utf-8").trim().split("\n");
-    // Search from end for the last assistant message with thinking
+    const lines = headTailLines(transcriptPath, 50);
     for (let i = lines.length - 1; i >= 0; i--) {
       const entry = JSON.parse(lines[i]);
       if (entry?.type !== "assistant") continue;
@@ -252,7 +256,7 @@ async function handlePre(): Promise<void> {
     message_id: messageId || undefined,
     step_count: stepCount,
     start_time: startTime,
-    steps: steps,
+    steps: steps.length > 200 ? steps.slice(-200) : steps,
   });
 }
 
@@ -307,7 +311,7 @@ async function handleSubagentStart(): Promise<void> {
   writeState({
     ...state,
     step_count: stepCount,
-    steps: steps,
+    steps: steps.length > 200 ? steps.slice(-200) : steps,
   });
 }
 
@@ -345,7 +349,7 @@ async function handleSubagentStop(): Promise<void> {
   writeState({
     ...state,
     step_count: stepCount,
-    steps: steps,
+    steps: steps.length > 200 ? steps.slice(-200) : steps,
   });
 }
 

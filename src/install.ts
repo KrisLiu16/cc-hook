@@ -18,7 +18,7 @@ function makeHooksConfig(bin: string) {
   const config: Record<string, unknown[]> = {};
   for (const { event, command, matcher } of HOOK_EVENTS) {
     const entry: Record<string, unknown> = {
-      hooks: [{ type: "command", command: `${bin} ${command}`, timeout: 5 }],
+      hooks: [{ type: "command", command: `${bin} ${command}`, timeout: 10 }],
     };
     if (matcher) entry.matcher = matcher;
     config[event] = [entry];

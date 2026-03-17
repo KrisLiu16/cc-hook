@@ -19,7 +19,7 @@ const TOOL_ICON: Record<string, string> = {
   WebFetch: "internet_outlined",
   WebSearch: "search_outlined",
   LSP: "code_outlined",
-  Skill: "flash_outlined",
+  Skill: "app_outlined",
   NotebookEdit: "edit_outlined",
 };
 
@@ -151,7 +151,12 @@ export function buildWorkingCard(
   ];
 
   if (pastSteps.length > 0) {
-    elements.push(makeCollapsibleHistory(pastSteps, `${pastSteps.length} steps`));
+    const maxShow = 100;
+    const displaySteps = pastSteps.length > maxShow ? pastSteps.slice(-maxShow) : pastSteps;
+    const label = pastSteps.length > maxShow
+      ? `${pastSteps.length} steps (showing recent ${maxShow})`
+      : `${pastSteps.length} steps`;
+    elements.push(makeCollapsibleHistory(displaySteps, label));
   }
 
   return {
@@ -299,7 +304,12 @@ export function buildDoneCard(
 
   if (allSteps.length > 0) {
     if (!thinking && truncated) elements.push({ tag: "hr" });
-    elements.push(makeCollapsibleHistory(allSteps, `执行记录 · ${stepCount} steps`));
+    const maxShow = 100;
+    const displaySteps = allSteps.length > maxShow ? allSteps.slice(-maxShow) : allSteps;
+    const label = allSteps.length > maxShow
+      ? `执行记录 · ${stepCount} steps (showing recent ${maxShow})`
+      : `执行记录 · ${stepCount} steps`;
+    elements.push(makeCollapsibleHistory(displaySteps, label));
   }
 
   if (elements.length === 0) {
