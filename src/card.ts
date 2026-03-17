@@ -8,56 +8,65 @@ function shortPath(p: string): string {
 
 type ToolInput = Record<string, unknown>;
 
-const TOOL_EMOJI: Record<string, string> = {
-  Read: "📖",
-  Edit: "✏️",
-  Write: "📝",
-  Bash: "⚡",
-  Grep: "🔍",
-  Glob: "📁",
-  Agent: "🤖",
-  WebFetch: "🌐",
-  WebSearch: "🔎",
-  LSP: "🧩",
-  Skill: "🎯",
-  NotebookEdit: "📓",
+const TOOL_ICON: Record<string, string> = {
+  Read: "file-link_outlined",
+  Edit: "edit_outlined",
+  Write: "add-doc_outlined",
+  Bash: "code_outlined",
+  Grep: "search_outlined",
+  Glob: "search_outlined",
+  Agent: "robot_outlined",
+  WebFetch: "internet_outlined",
+  WebSearch: "search_outlined",
+  LSP: "code_outlined",
+  Skill: "flash_outlined",
+  NotebookEdit: "edit_outlined",
 };
 
-export function toolDisplay(tool: string, input: ToolInput): string {
+export function toolIcon(tool: string): string {
+  return TOOL_ICON[tool] || "setting_outlined";
+}
+
+/** Plain text label for a tool step (used in div elements) */
+export function toolLabel(tool: string, input: ToolInput): string {
   const str = (key: string) => (input[key] as string) || "";
-  const emoji = TOOL_EMOJI[tool] || "⚙️";
 
   switch (tool) {
     case "Read":
-      return `${emoji} \`READ\`  ${shortPath(str("file_path"))}`;
+      return `READ  ${shortPath(str("file_path"))}`;
     case "Edit":
-      return `${emoji} \`EDIT\`  ${shortPath(str("file_path"))}`;
+      return `EDIT  ${shortPath(str("file_path"))}`;
     case "Write":
-      return `${emoji} \`WRITE\` ${shortPath(str("file_path"))}`;
+      return `WRITE ${shortPath(str("file_path"))}`;
     case "Bash": {
       const cmd = str("command").split("\n")[0];
-      const short = cmd.slice(0, 55);
-      return `${emoji} \`BASH\`  \`${short}${cmd.length > 55 ? "…" : ""}\``;
+      const short = cmd.slice(0, 50);
+      return `BASH  ${short}${cmd.length > 50 ? "…" : ""}`;
     }
     case "Grep":
-      return `${emoji} \`GREP\`  \`${str("pattern")}\`${str("path") ? ` in ${shortPath(str("path"))}` : ""}`;
+      return `GREP  ${str("pattern")}${str("path") ? ` in ${shortPath(str("path"))}` : ""}`;
     case "Glob":
-      return `${emoji} \`GLOB\`  \`${str("pattern")}\``;
+      return `GLOB  ${str("pattern")}`;
     case "Agent":
-      return `${emoji} \`AGENT\` ${str("description")}`;
+      return `AGENT ${str("description")}`;
     case "WebFetch":
-      return `${emoji} \`FETCH\` ${str("url").slice(0, 50)}`;
+      return `FETCH ${str("url").slice(0, 45)}`;
     case "WebSearch":
-      return `${emoji} \`SEARCH\` ${str("query")}`;
+      return `SEARCH ${str("query")}`;
     case "LSP":
-      return `${emoji} \`LSP\`   ${str("operation")} ${shortPath(str("filePath"))}`;
+      return `LSP   ${str("operation")} ${shortPath(str("filePath"))}`;
     case "Skill":
-      return `${emoji} \`SKILL\` ${str("skill")}`;
+      return `SKILL ${str("skill")}`;
     case "NotebookEdit":
-      return `${emoji} \`NOTEBOOK\` edit`;
+      return `NOTEBOOK edit`;
     default:
-      return `${emoji} \`${tool.toUpperCase()}\``;
+      return tool.toUpperCase();
   }
+}
+
+/** Display text for current step */
+export function toolDisplay(tool: string, input: ToolInput): string {
+  return toolLabel(tool, input);
 }
 
 // --- Card JSON 2.0 builders ---
@@ -74,25 +83,24 @@ interface CardHeader {
   }>;
 }
 
+type TagItem = { tag: "text_tag"; text: { tag: "plain_text"; content: string }; color: string };
+
 function makeHeader(opts: {
   title: string;
   subtitle?: string;
   template: string;
   icon: string;
-  tagText: string;
-  tagColor: string;
+  tags: Array<{ text: string; color: string }>;
 }): CardHeader {
   const header: CardHeader = {
     title: { tag: "plain_text", content: opts.title },
     template: opts.template,
     icon: { tag: "standard_icon", token: opts.icon },
-    text_tag_list: [
-      {
-        tag: "text_tag",
-        text: { tag: "plain_text", content: opts.tagText },
-        color: opts.tagColor,
-      },
-    ],
+    text_tag_list: opts.tags.map((t): TagItem => ({
+      tag: "text_tag",
+      text: { tag: "plain_text", content: t.text },
+      color: t.color,
+    })),
   };
   if (opts.subtitle) {
     header.subtitle = { tag: "plain_text", content: opts.subtitle };
@@ -110,13 +118,16 @@ export function buildThinkingCard(prompt: string, botName = "MiniMax AI") {
       title: botName,
       subtitle: "thinking…",
       template: "blue",
-      icon: "chat_outlined",
-      tagText: "思考中",
-      tagColor: "blue",
+      icon: "loading_outlined",
+      tags: [{ text: "思考中", color: "blue" }],
     }),
     body: {
       elements: [
-        { tag: "markdown", content: `💬 ${short}` },
+        {
+          tag: "div",
+          icon: { tag: "standard_icon", token: "chat_outlined", color: "blue" },
+          text: { tag: "plain_text", content: short },
+        },
         { tag: "markdown", content: `<font color='grey'>waiting for first action…</font>` },
       ],
     },
@@ -126,30 +137,34 @@ export function buildThinkingCard(prompt: string, botName = "MiniMax AI") {
 /** Working card — updated on each tool call */
 export function buildWorkingCard(
   current: string,
-  history: string,
+  pastSteps: StepInfo[],
   stepCount: number,
   elapsed: string,
   botName = "MiniMax AI",
+  currentTool = "",
 ) {
+  const currentStep: StepInfo = { tool: currentTool, label: current };
+  const elements: unknown[] = [
+    currentTool
+      ? stepToDiv(currentStep)
+      : { tag: "markdown", content: `▸ ${current}` },
+  ];
+
+  if (pastSteps.length > 0) {
+    elements.push(makeCollapsibleHistory(pastSteps, `${pastSteps.length} steps`));
+  }
+
   return {
     schema: "2.0",
     config: { wide_screen_mode: true },
     header: makeHeader({
       title: botName,
-      subtitle: `step ${stepCount} · ${elapsed}`,
-      template: "blue",
-      icon: "loop_outlined",
-      tagText: "执行中",
-      tagColor: "blue",
+      subtitle: `${stepCount} steps · ${elapsed}`,
+      template: "indigo",
+      icon: currentTool ? toolIcon(currentTool) : "loop_outlined",
+      tags: [{ text: "执行中", color: "blue" }],
     }),
-    body: {
-      elements: [
-        { tag: "markdown", content: `▸ ${current}` },
-        { tag: "hr" },
-        { tag: "markdown", content: history },
-        { tag: "markdown", content: `<font color='grey'>step ${stepCount} · ${elapsed}</font>` },
-      ],
-    },
+    body: { elements },
   };
 }
 
@@ -162,13 +177,100 @@ export function toFeishuMarkdown(md: string): string {
     .replace(/^>\s?/gm, "");
 }
 
-/** Done card — final state (no reply) */
+// --- Step data ---
+
+export interface StepInfo {
+  tool: string;
+  label: string;
+}
+
+const TOOL_COLOR: Record<string, string> = {
+  Read: "blue",
+  Edit: "orange",
+  Write: "orange",
+  Bash: "purple",
+  Grep: "green",
+  Glob: "green",
+  Agent: "blue",
+  WebFetch: "wathet",
+  WebSearch: "green",
+  LSP: "purple",
+  Skill: "indigo",
+  NotebookEdit: "orange",
+};
+
+function stepToDiv(step: StepInfo) {
+  return {
+    tag: "div",
+    icon: {
+      tag: "standard_icon",
+      token: toolIcon(step.tool),
+      color: TOOL_COLOR[step.tool] || "grey",
+    },
+    text: {
+      tag: "plain_text",
+      content: step.label,
+    },
+  };
+}
+
+// --- Shared collapsible panel for history ---
+
+function makeCollapsibleHistory(steps: StepInfo[], label: string) {
+  return {
+    tag: "collapsible_panel",
+    expanded: false,
+    header: {
+      title: { tag: "plain_text", content: label },
+      vertical_align: "center",
+      padding: "4px 0px 4px 8px",
+      icon: {
+        tag: "standard_icon",
+        token: "down-small-ccm_outlined",
+        color: "grey",
+        size: "16px 16px",
+      },
+      icon_position: "right",
+      icon_expanded_angle: 180,
+    },
+    vertical_spacing: "2px",
+    background_color: "default",
+    border: { color: "grey", corner_radius: "5px" },
+    elements: steps.map(stepToDiv),
+  };
+}
+
+/** Done card — with reply content and collapsible execution history */
 export function buildDoneCard(
-  history: string,
+  reply: string,
+  allSteps: StepInfo[],
   stepCount: number,
   elapsed: string,
   botName = "MiniMax AI",
 ) {
+  const maxLen = 2500;
+  const truncated =
+    reply.length > maxLen ? reply.slice(0, maxLen) + "\n\n…(truncated)" : reply;
+
+  const tags: Array<{ text: string; color: string }> = [
+    { text: "已完成", color: "green" },
+  ];
+
+  const elements: unknown[] = [];
+
+  if (truncated) {
+    elements.push({ tag: "markdown", content: truncated });
+  }
+
+  if (allSteps.length > 0) {
+    if (truncated) elements.push({ tag: "hr" });
+    elements.push(makeCollapsibleHistory(allSteps, `执行记录 · ${stepCount} steps`));
+  }
+
+  if (elements.length === 0) {
+    elements.push({ tag: "markdown", content: `<font color='grey'>done · ${elapsed}</font>` });
+  }
+
   return {
     schema: "2.0",
     config: { wide_screen_mode: true },
@@ -176,37 +278,9 @@ export function buildDoneCard(
       title: botName,
       subtitle: `${stepCount} steps · ${elapsed}`,
       template: "green",
-      icon: "succeed_outlined",
-      tagText: "已完成",
-      tagColor: "green",
-    }),
-    body: {
-      elements: [
-        { tag: "markdown", content: history },
-        { tag: "markdown", content: `<font color='grey'>done · ${stepCount} steps · ${elapsed}</font>` },
-      ],
-    },
-  };
-}
-
-/** Reply card — standalone card for the formatted response */
-export function buildReplyCard(reply: string, botName = "MiniMax AI") {
-  const maxLen = 2500;
-  const truncated =
-    reply.length > maxLen ? reply.slice(0, maxLen) + "\n\n…(truncated)" : reply;
-
-  return {
-    schema: "2.0",
-    config: { wide_screen_mode: true },
-    header: makeHeader({
-      title: botName,
-      template: "purple",
       icon: "chat_outlined",
-      tagText: "回复",
-      tagColor: "purple",
+      tags,
     }),
-    body: {
-      elements: [{ tag: "markdown", content: truncated }],
-    },
+    body: { elements },
   };
 }

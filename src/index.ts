@@ -7,9 +7,10 @@ import {
   buildThinkingCard,
   buildWorkingCard,
   buildDoneCard,
-  buildReplyCard,
   toFeishuMarkdown,
   toolDisplay,
+  toolLabel,
+  type StepInfo,
 } from "./card.js";
 import { installHooks, uninstallHooks } from "./install.js";
 
@@ -43,7 +44,7 @@ interface State {
   message_id?: string;
   step_count?: number;
   start_time?: number;
-  steps?: string[];
+  steps?: StepInfo[];
   bot_name?: string;
 }
 
@@ -207,18 +208,16 @@ async function handlePre(): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   const startTime = state.start_time || now;
   const stepCount = (state.step_count || 0) + 1;
-  const steps = state.steps || [];
-  const display = toolDisplay(toolName, input.tool_input || {});
+  const steps: StepInfo[] = state.steps || [];
+  const toolInput = input.tool_input || {};
+  const display = toolDisplay(toolName, toolInput);
+  const label = toolLabel(toolName, toolInput);
   const elapsed = formatTime(now - startTime);
 
-  const recentSteps = steps.slice(-12);
-  const history =
-    recentSteps.length > 0
-      ? `**Record** · ${recentSteps.length} steps\n${recentSteps.join("\n")}`
-      : "**Record** · starting…";
+  const pastSteps = steps.slice(-12);
 
   const botName = state.bot_name || "MiniMax AI";
-  const card = buildWorkingCard(display, history, stepCount, elapsed, botName);
+  const card = buildWorkingCard(display, pastSteps, stepCount, elapsed, botName, toolName);
 
   let messageId = state.message_id;
   if (!messageId) {
@@ -229,7 +228,7 @@ async function handlePre(): Promise<void> {
     appendFileSync("/tmp/cc-hook-debug.log", `pre updateCard: ${messageId}\n`);
   }
 
-  steps.push(display);
+  steps.push({ tool: toolName, label });
   writeState({
     ...state,
     message_id: messageId || undefined,
@@ -276,22 +275,17 @@ async function handleSubagentStart(): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   const startTime = state.start_time || now;
   const stepCount = (state.step_count || 0) + 1;
-  const steps = state.steps || [];
+  const steps: StepInfo[] = state.steps || [];
   const elapsed = formatTime(now - startTime);
 
-  const display = `🚀 \`AGENT\` ${agentType} spawned`;
-
-  const recentSteps = steps.slice(-12);
-  const history =
-    recentSteps.length > 0
-      ? `**Record** · ${recentSteps.length} steps\n${recentSteps.join("\n")}`
-      : "**Record** · starting…";
+  const display = `AGENT ${agentType} spawned`;
+  const pastSteps = steps.slice(-12);
 
   const botName = state.bot_name || "MiniMax AI";
-  const card = buildWorkingCard(display, history, stepCount, elapsed, botName);
+  const card = buildWorkingCard(display, pastSteps, stepCount, elapsed, botName, "Agent");
   await client.updateCard(state.message_id, card);
 
-  steps.push(display);
+  steps.push({ tool: "Agent", label: `AGENT ${agentType} spawned` });
   writeState({
     ...state,
     step_count: stepCount,
@@ -319,22 +313,17 @@ async function handleSubagentStop(): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   const startTime = state.start_time || now;
   const stepCount = (state.step_count || 0) + 1;
-  const steps = state.steps || [];
+  const steps: StepInfo[] = state.steps || [];
   const elapsed = formatTime(now - startTime);
 
-  const display = `✅ \`AGENT\` ${agentType} done`;
-
-  const recentSteps = steps.slice(-12);
-  const history =
-    recentSteps.length > 0
-      ? `**Record** · ${recentSteps.length} steps\n${recentSteps.join("\n")}`
-      : "**Record** · starting…";
+  const display = `AGENT ${agentType} done`;
+  const pastSteps = steps.slice(-12);
 
   const botName = state.bot_name || "MiniMax AI";
-  const card = buildWorkingCard(display, history, stepCount, elapsed, botName);
+  const card = buildWorkingCard(display, pastSteps, stepCount, elapsed, botName, "Agent");
   await client.updateCard(state.message_id, card);
 
-  steps.push(display);
+  steps.push({ tool: "Agent", label: `AGENT ${agentType} done` });
   writeState({
     ...state,
     step_count: stepCount,
@@ -376,25 +365,18 @@ async function handleStop(): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   const elapsed = formatTime(now - (state.start_time || now));
   const stepCount = state.step_count || 0;
-  const steps = state.steps || [];
-  const history =
-    steps.length > 0
-      ? `**Record** · ${steps.length} steps\n${steps.join("\n")}`
-      : "";
+  const steps: StepInfo[] = state.steps || [];
 
   const botName = state.bot_name || "MiniMax AI";
+  const reply = lastMessage ? toFeishuMarkdown(lastMessage) : "";
 
-  // 1. Update existing card to "done" (execution history only)
+  // Update existing card to done (reply + collapsible history)
   if (state.message_id) {
-    const doneCard = buildDoneCard(history || "**Record** · no tool calls", stepCount, elapsed, botName);
+    const doneCard = buildDoneCard(reply, steps, stepCount, elapsed, botName);
     await client.updateCard(state.message_id, doneCard);
-  }
-
-  // 2. Send a separate reply card
-  if (lastMessage) {
-    const reply = toFeishuMarkdown(lastMessage);
-    const replyCard = buildReplyCard(reply, botName);
-    await client.sendCard(state.chat_id, replyCard);
+  } else if (reply) {
+    const doneCard = buildDoneCard(reply, steps, stepCount, elapsed, botName);
+    await client.sendCard(state.chat_id, doneCard);
   }
 
   appendFileSync("/tmp/cc-hook-debug.log", `stop: first pass, blocking → summary\n`);
