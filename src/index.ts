@@ -232,7 +232,7 @@ async function handlePre(): Promise<void> {
   const label = toolLabel(toolName, toolInput);
   const elapsed = formatTime(now - startTime);
 
-  const pastSteps = steps.slice(-12);
+  const pastSteps = steps;
 
   const botName = state.bot_name || "MiniMax AI";
   const card = buildWorkingCard(display, pastSteps, stepCount, elapsed, botName, toolName);
@@ -252,7 +252,7 @@ async function handlePre(): Promise<void> {
     message_id: messageId || undefined,
     step_count: stepCount,
     start_time: startTime,
-    steps: steps.slice(-20),
+    steps: steps,
   });
 }
 
@@ -297,7 +297,7 @@ async function handleSubagentStart(): Promise<void> {
   const elapsed = formatTime(now - startTime);
 
   const display = `Sub-Agent: ${agentType}`;
-  const pastSteps = steps.slice(-12);
+  const pastSteps = steps;
 
   const botName = state.bot_name || "MiniMax AI";
   const card = buildWorkingCard(display, pastSteps, stepCount, elapsed, botName, "Agent");
@@ -307,7 +307,7 @@ async function handleSubagentStart(): Promise<void> {
   writeState({
     ...state,
     step_count: stepCount,
-    steps: steps.slice(-20),
+    steps: steps,
   });
 }
 
@@ -335,7 +335,7 @@ async function handleSubagentStop(): Promise<void> {
   const elapsed = formatTime(now - startTime);
 
   const display = `Sub-Agent: ${agentType} Done`;
-  const pastSteps = steps.slice(-12);
+  const pastSteps = steps;
 
   const botName = state.bot_name || "MiniMax AI";
   const card = buildWorkingCard(display, pastSteps, stepCount, elapsed, botName, "Agent");
@@ -345,7 +345,7 @@ async function handleSubagentStop(): Promise<void> {
   writeState({
     ...state,
     step_count: stepCount,
-    steps: steps.slice(-20),
+    steps: steps,
   });
 }
 
