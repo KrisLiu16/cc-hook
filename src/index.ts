@@ -13,6 +13,7 @@ interface State {
   enabled: boolean;
   chat_id: string;
   session_id?: string; // bound session — only this session sends cards
+  pending_bind?: boolean; // waiting for PostToolUse to capture session_id
   message_id?: string;
   step_count?: number;
   start_time?: number;
@@ -74,16 +75,14 @@ async function handlePre(): Promise<void> {
   const state = readState();
   if (!state?.enabled || !state.chat_id) return;
 
+  // Still waiting for PostToolUse to bind session — skip all PreToolUse
+  if (state.pending_bind) return;
+
   const input = JSON.parse(readStdin());
   const sessionId: string = input.session_id || "";
 
-  // Session binding: only the bound session sends cards
-  if (state.session_id) {
-    if (state.session_id !== sessionId) return; // wrong session, skip
-  } else if (sessionId) {
-    // First hook after `cc-hook on` — capture this session
-    state.session_id = sessionId;
-  }
+  // Session check: only the bound session sends cards
+  if (state.session_id && state.session_id !== sessionId) return;
 
   const toolName: string = input.tool_name || "";
   if (isFiltered(toolName)) return;
@@ -123,6 +122,38 @@ async function handlePre(): Promise<void> {
   });
 }
 
+/**
+ * PostToolUse handler — binds session_id after `cc-hook on` runs.
+ *
+ * Flow:
+ *   1. Claude (minibridge) calls Bash(`cc-hook on ...`)
+ *   2. PreToolUse fires → state not created yet → skip
+ *   3. Bash runs `cc-hook on` → state created with pending_bind: true
+ *   4. PostToolUse fires → sees pending_bind → captures session_id → done
+ *
+ * This is race-free: PostToolUse for a specific tool call always fires
+ * in the same session that made the call.
+ */
+async function handlePost(): Promise<void> {
+  const state = readState();
+  if (!state?.pending_bind) return;
+
+  const input = JSON.parse(readStdin());
+  const sessionId: string = input.session_id || "";
+  if (!sessionId) return;
+
+  // Only bind from the Bash command that ran `cc-hook on`
+  const command: string =
+    (input.tool_input as Record<string, unknown>)?.command as string || "";
+  if (!command.includes("cc-hook on") && !command.includes("cc-hook-state")) {
+    return;
+  }
+
+  state.session_id = sessionId;
+  state.pending_bind = undefined;
+  writeState(state);
+}
+
 async function handleStop(): Promise<void> {
   const state = readState();
   if (!state?.enabled || !state.chat_id || !state.message_id) return;
@@ -130,7 +161,6 @@ async function handleStop(): Promise<void> {
   const input = JSON.parse(readStdin());
   const sessionId: string = input.session_id || "";
 
-  // Only the bound session can finalize the card
   if (state.session_id && state.session_id !== sessionId) return;
 
   const client = await FeishuClient.create();
@@ -159,7 +189,6 @@ async function handleStop(): Promise<void> {
 
 async function handleEnable(chatId?: string): Promise<void> {
   if (!chatId) {
-    // Try to extract from mini-bridge logs
     try {
       const log = readFileSync(
         `${process.env.HOME}/.mini-bridge/gateway.log`,
@@ -187,8 +216,9 @@ async function handleEnable(chatId?: string): Promise<void> {
     process.exit(1);
   }
 
-  writeState({ enabled: true, chat_id: chatId });
-  console.log(`Card mode enabled · chat: ${chatId}`);
+  // pending_bind: true — session_id will be captured by PostToolUse
+  writeState({ enabled: true, chat_id: chatId, pending_bind: true });
+  console.log(`Card mode enabled · chat: ${chatId} · awaiting session bind`);
 }
 
 function handleDisable(): void {
@@ -207,7 +237,11 @@ function handleStatus(): void {
   }
   console.log(`Status:   ${state.enabled ? "enabled" : "disabled"}`);
   console.log(`Chat:     ${state.chat_id}`);
-  console.log(`Session:  ${state.session_id || "(awaiting binding)"}`);
+  if (state.pending_bind) {
+    console.log("Session:  (pending bind)");
+  } else {
+    console.log(`Session:  ${state.session_id || "(none)"}`);
+  }
   if (state.message_id) console.log(`Card:     ${state.message_id}`);
   if (state.step_count) console.log(`Steps:    ${state.step_count}`);
 }
@@ -222,6 +256,7 @@ try {
       await handlePre();
       break;
     case "post":
+      await handlePost();
       break;
     case "stop":
       await handleStop();
@@ -257,6 +292,5 @@ try {
       console.log("  cc-hook stop               Stop");
   }
 } catch {
-  // Hooks must never crash Claude Code
   process.exit(0);
 }
