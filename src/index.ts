@@ -170,11 +170,10 @@ async function handleStop(): Promise<void> {
   const card = buildDoneCard(history, stepCount, elapsed);
   await client.updateCard(state.message_id, card);
 
-  // Reset card state, keep session binding
+  // Session ended — disable so next session starts clean
   writeState({
-    enabled: state.enabled,
+    enabled: false,
     chat_id: state.chat_id,
-    session_id: state.session_id,
   });
 }
 
