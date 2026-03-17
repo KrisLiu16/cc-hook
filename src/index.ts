@@ -123,16 +123,14 @@ async function handlePre(): Promise<void> {
 }
 
 /**
- * PostToolUse handler — binds session_id after `cc-hook on` runs.
+ * PostToolUse handler — binds session_id when pending_bind is set.
  *
  * Flow:
- *   1. Claude (minibridge) calls Bash(`cc-hook on ...`)
- *   2. PreToolUse fires → state not created yet → skip
- *   3. Bash runs `cc-hook on` → state created with pending_bind: true
- *   4. PostToolUse fires → sees pending_bind → captures session_id → done
+ *   1. `cc-hook on` writes state with pending_bind: true
+ *   2. The next PostToolUse from the active session captures session_id
+ *   3. All subsequent PreToolUse/Stop calls are scoped to that session
  *
- * This is race-free: PostToolUse for a specific tool call always fires
- * in the same session that made the call.
+ * No Bash call required — any tool's PostToolUse will trigger the bind.
  */
 async function handlePost(): Promise<void> {
   const state = readState();
@@ -141,13 +139,6 @@ async function handlePost(): Promise<void> {
   const input = JSON.parse(readStdin());
   const sessionId: string = input.session_id || "";
   if (!sessionId) return;
-
-  // Only bind from the Bash command that ran `cc-hook on`
-  const command: string =
-    (input.tool_input as Record<string, unknown>)?.command as string || "";
-  if (!command.includes("cc-hook on") && !command.includes("cc-hook-state")) {
-    return;
-  }
 
   state.session_id = sessionId;
   state.pending_bind = undefined;
