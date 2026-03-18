@@ -151,7 +151,7 @@ export function buildWorkingCard(
   ];
 
   if (pastSteps.length > 0) {
-    const maxShow = 100;
+    const maxShow = 50;
     const displaySteps = pastSteps.length > maxShow ? pastSteps.slice(-maxShow) : pastSteps;
     const label = pastSteps.length > maxShow
       ? `${pastSteps.length} steps (showing recent ${maxShow})`
@@ -304,7 +304,7 @@ export function buildDoneCard(
 
   if (allSteps.length > 0) {
     if (!thinking && truncated) elements.push({ tag: "hr" });
-    const maxShow = 100;
+    const maxShow = 50;
     const displaySteps = allSteps.length > maxShow ? allSteps.slice(-maxShow) : allSteps;
     const label = allSteps.length > maxShow
       ? `执行记录 · ${stepCount} steps (showing recent ${maxShow})`
